@@ -1,0 +1,2566 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Germany Territory Map — Zone Partitioning</title>
+  <link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet" />
+  <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
+  <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
+  <script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
+  <style>
+    html, body { height:100%; margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+    #map { position:absolute; inset:0; }
+    .panel { position:absolute; left:12px; top:12px; background:rgba(255,255,255,.96); padding:12px 14px; border-radius:12px; box-shadow:0 8px 24px rgba(0,0,0,.12); z-index:10; max-width:420px; max-height:90vh; overflow-y:auto; }
+    .legend { position:absolute; right:12px; top:12px; background:rgba(255,255,255,.96); padding:12px 14px; border-radius:12px; box-shadow:0 8px 24px rgba(0,0,0,.12); z-index:10; max-width:240px; max-height:80vh; overflow-y:auto; }
+    .legend-item { display:flex; align-items:center; gap:8px; margin:6px 0; font-size:12px; cursor:pointer; padding:4px 6px; border-radius:6px; transition: all 0.2s; }
+    .legend-item:hover { background-color: #f0f0f0; }
+    .legend-item.highlighted { font-weight: bold; background-color: #e3f2fd; }
+    .legend-color { width:18px; height:18px; border-radius:3px; border:1px solid #ccc; flex-shrink:0; }
+    .row { display:flex; gap:8px; align-items:center; margin:8px 0; flex-wrap:wrap; }
+    .pill { display:inline-block; background:#eef2ff; color:#1e3a8a; padding:4px 10px; border-radius:999px; font-size:12px; }
+    .footer { position:absolute; left:12px; bottom:10px; background:rgba(255,255,255,.95); padding:6px 10px; border-radius:10px; font-size:12px; z-index:10; }
+    .diag { font-size:11px; margin-top:8px; padding:8px; background:#f8fafc; border:1px solid #e5e7eb; border-radius:8px; white-space:pre-wrap; color:#666; }
+    select, button, input { font-size:13px; padding:7px 10px; border-radius:8px; border:1px solid #d0d0d0; background:#fff; cursor:pointer; transition: all 0.2s; }
+    button:hover { background:#f0f0f0; border-color:#999; }
+    input { cursor:text; width:60px; }
+    .partition-section { margin-top:12px; padding-top:12px; border-top:1px solid #e5e7eb; }
+    .subzone-info { font-size:11px; color:#666; margin-top:6px; }
+
+    /* Tab styles */
+    .tab-buttons { display:flex; gap:4px; margin-bottom:8px; flex-wrap:wrap; }
+    .tab-button { font-size:13px; padding:8px 14px; border-radius:8px; border:1px solid #d0d0d0; background:#f8f9fa; cursor:pointer; transition: all 0.2s; font-weight:500; }
+    .tab-button.active { background:#007bff; color:white; border-color:#007bff; }
+    .tab-button:hover:not(.active) { background:#e9ecef; }
+    .tab-content { display:none; }
+    .tab-content.active { display:block; }
+
+    /* Heat map legend gradient */
+    .heat-gradient { height:120px; width:20px; border-radius:4px; border:1px solid #ccc; margin:8px 0; background: linear-gradient(to bottom, rgba(255,0,0,0.8), rgba(255,255,0,0.6), rgba(0,255,0,0.4), rgba(240,240,240,0.3)); }
+  </style>
+</head>
+<body>
+<div id="map"></div>
+
+<div class="panel">
+  <div style="font-weight:700; font-size:16px; margin-bottom:8px;">Germany Territory Map</div>
+
+  <!-- Tab Navigation -->
+  <div class="tab-buttons">
+    <button id="brokerTab" class="tab-button active">Broker Zones</button>
+    <button id="companyTab" class="tab-button">Company Heat Map</button>
+    <button id="partitionTab" class="tab-button">Zone Partitioning</button>
+  </div>
+
+  <!-- Broker Zones Tab Content -->
+  <div id="brokerContent" class="tab-content active">
+    <div class="row">
+      <button id="resetBtn">Reset to Landkreise view</button>
+      <span id="lkBadge" class="pill" style="display:none"></span>
+    </div>
+    <div style="font-size:11px; color:#666; margin-top:6px;">
+      Click on a Landkreis to see PLZ details. Click broker names in legend to highlight zones.
+    </div>
+  </div>
+
+  <!-- Company Heat Map Tab Content -->
+  <div id="companyContent" class="tab-content">
+    <div class="row">
+      <button id="companyResetBtn">Reset to Landkreise view</button>
+    </div>
+    <div style="font-size:11px; color:#666; margin-top:6px;">
+      Click on a Landkreis to zoom and see PLZ-level detail. Darker colors = more companies.
+    </div>
+  </div>
+
+  <!-- Zone Partitioning Tab Content -->
+  <div id="partitionContent" class="tab-content">
+    <div class="partition-section">
+      <div style="font-weight:600; margin-bottom:8px; font-size:13px;">Partition Broker Zone</div>
+      <div class="row">
+        <label style="font-size:12px; min-width:80px;">Broker:</label>
+        <select id="partitionBrokerSelect" style="flex:1;">
+          <option value="">Select broker...</option>
+        </select>
+      </div>
+      <div class="row">
+        <label style="font-size:12px; min-width:80px;">Subzones:</label>
+        <input type="number" id="numSubzones" min="2" max="20" value="3" />
+      </div>
+      <div class="row">
+        <button id="partitionBtn" style="flex:1;">Create Subzones</button>
+        <button id="clearPartitionBtn">Clear</button>
+      </div>
+      <div class="row" style="margin-top:6px;">
+        <button id="resetFocusBtn" style="flex:1; font-size:12px;">Reset View</button>
+      </div>
+      <div style="font-size:11px; color:#666; margin-top:6px;">
+        Partitions selected broker zone into subzones. State is auto-saved.
+      </div>
+      <div id="partitionInfo" class="subzone-info"></div>
+    </div>
+    <div class="partition-section">
+      <div style="font-weight:600; margin-bottom:8px; font-size:13px;">Reassignment Mode</div>
+      <div class="row">
+        <label style="font-size:12px;">
+          <input type="checkbox" id="reassignmentMode" style="margin-right:6px;" />
+          Enable Reassignment
+        </label>
+      </div>
+      <div id="reassignmentControls" style="display:none; margin-top:8px;">
+        <div class="row">
+          <label style="font-size:12px; min-width:80px;">Reassign to:</label>
+          <select id="reassignBrokerSelect" style="flex:1;">
+            <option value="">Select broker...</option>
+          </select>
+        </div>
+        <div class="row">
+          <label style="font-size:12px;">
+            <input type="radio" name="reassignMode" value="plz" checked style="margin-right:4px;" />
+            PLZ
+          </label>
+          <label style="font-size:12px; margin-left:12px;">
+            <input type="radio" name="reassignMode" value="subzone" style="margin-right:4px;" />
+            Subzone
+          </label>
+        </div>
+        <div class="row">
+          <button id="addNewBrokerBtn" style="flex:1; font-size:12px;">+ Add New Broker</button>
+        </div>
+        <div id="newBrokerInput" style="display:none; margin-top:6px;">
+          <input type="text" id="newBrokerName" placeholder="Enter broker name" style="width:100%; margin-bottom:6px;" />
+          <div class="row">
+            <button id="confirmNewBrokerBtn" style="flex:1; background:#28a745; color:white; font-size:12px;">Confirm</button>
+            <button id="cancelNewBrokerBtn" style="flex:1; font-size:12px;">Cancel</button>
+          </div>
+        </div>
+        <div id="reassignHint" style="font-size:11px; color:#666; margin-top:6px;">
+          Click on PLZ areas to reassign them to selected broker
+        </div>
+      </div>
+    </div>
+    <div class="partition-section">
+      <div style="font-weight:600; margin-bottom:8px; font-size:13px;">State Management</div>
+      <div class="row">
+        <button id="saveStateBtn" style="flex:1;">Save State</button>
+        <button id="loadStateBtn" style="flex:1;">Load State</button>
+      </div>
+      <input type="file" id="loadStateFile" accept=".json" style="display:none;" />
+      <div style="font-size:11px; color:#666; margin-top:6px;">
+        Save/load partitioning and reassignments as JSON files
+      </div>
+    </div>
+    <div class="partition-section">
+      <div style="font-weight:600; margin-bottom:8px; font-size:13px;">Export</div>
+      <div class="row">
+        <button id="exportPartitionBtn" style="flex:1;">Export Final Assignments</button>
+      </div>
+      <div style="font-size:11px; color:#666; margin-top:6px;">
+        Downloads CSV with all partitions and reassignments
+      </div>
+    </div>
+  </div>
+
+  <div id="diag" class="diag">Loading…</div>
+</div>
+
+<div class="legend">
+  <div id="legendTitle" style="font-weight:700; margin-bottom:10px; font-size:14px;">Broker Legend</div>
+  <div id="legendContent"></div>
+</div>
+
+<div class="footer">Base map © OpenStreetMap · MapLibre GL JS</div>
+
+<script>
+(function(){
+  const FILES = {
+    lkGeo: 'kreise.geojson',
+    plzGeo: 'plz.geojson',
+    plzCSV: 'assignments_plz.csv',
+    lkCSV: 'assignments_landkreis.csv'
+  };
+
+  // Broker color palette - Unassigned in unified gray color
+  const BROKER_COLORS = {
+    'Unassigned': '#d1d5db',
+    'Anton Glas': '#3b82f6',
+    'Mirko Barkic': '#f59e0b',
+    'Line Getrost': '#ef4444',
+    'Daniel Schalm': '#8b5cf6',
+    'Kristina Kreimer': '#ec4899',
+    'Markus Henning': '#10b981',
+    'Line Getrost Babysit': '#f97316',
+    'Leon Stehning': '#6366f1',
+    'Dana Hermanni': '#06b6d4',
+    'Henryk Kronsbein': '#84cc16',
+    'David Ingendorn': '#dc2626',
+    'Dean Brandt': '#7c3aed',
+    'Mirko Barkic Babysit': '#ea580c'
+  };
+
+  // Predefined distinct color palettes for subzones (high contrast, visually distinct)
+  const SUBZONE_PALETTES = {
+    2: ['#e74c3c', '#3498db'], // Red, Blue
+    3: ['#e74c3c', '#f39c12', '#27ae60'], // Red, Orange, Green
+    4: ['#e74c3c', '#f39c12', '#3498db', '#9b59b6'], // Red, Orange, Blue, Purple
+    5: ['#e74c3c', '#f39c12', '#f1c40f', '#3498db', '#9b59b6'], // Red, Orange, Yellow, Blue, Purple
+    6: ['#e74c3c', '#e67e22', '#f39c12', '#3498db', '#9b59b6', '#1abc9c'], // Red, Dark Orange, Orange, Blue, Purple, Teal
+    7: ['#e74c3c', '#e67e22', '#f39c12', '#f1c40f', '#3498db', '#9b59b6', '#1abc9c'],
+    8: ['#e74c3c', '#e67e22', '#f39c12', '#f1c40f', '#2ecc71', '#3498db', '#9b59b6', '#1abc9c'],
+    9: ['#e74c3c', '#e67e22', '#f39c12', '#f1c40f', '#2ecc71', '#3498db', '#2980b9', '#9b59b6', '#1abc9c'],
+    10: ['#e74c3c', '#c0392b', '#e67e22', '#f39c12', '#f1c40f', '#2ecc71', '#3498db', '#2980b9', '#9b59b6', '#1abc9c']
+  };
+
+  // Generate subzone colors using distinct, high-contrast palette
+  function generateSubzoneColors(baseColor, numSubzones) {
+    // Use predefined palette if available
+    if (SUBZONE_PALETTES[numSubzones]) {
+      return SUBZONE_PALETTES[numSubzones].slice(0, numSubzones);
+    }
+    
+    // For more than 10 subzones, generate using HSL with larger hue shifts
+    const colors = [];
+    const r = parseInt(baseColor.slice(1, 3), 16) / 255;
+    const g = parseInt(baseColor.slice(3, 5), 16) / 255;
+    const b = parseInt(baseColor.slice(5, 7), 16) / 255;
+    
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    let h, s, l = (max + min) / 2;
+    
+    if (max === min) {
+      h = s = 0;
+    } else {
+      const d = max - min;
+      s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+      switch (max) {
+        case r: h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break;
+        case g: h = ((b - r) / d + 2) / 6; break;
+        case b: h = ((r - g) / d + 4) / 6; break;
+      }
+    }
+    
+    // Generate distinct colors with larger hue variations
+    for (let i = 0; i < numSubzones; i++) {
+      const progress = i / (numSubzones - 1 || 1);
+      
+      // Larger hue shift for more distinction (±60 degrees)
+      const hueShift = (progress - 0.5) * 0.3; // ±30% of color wheel
+      let newH = (h + hueShift) % 1;
+      if (newH < 0) newH += 1;
+      
+      // High saturation for vibrant colors
+      const newS = 0.7 + (1 - Math.abs(progress - 0.5) * 2) * 0.3;
+      
+      // Vary lightness more dramatically
+      const newL = 0.35 + progress * 0.35;
+      
+      const rgb = hslToRgb(newH, newS, newL);
+      const hexR = Math.round(rgb[0] * 255).toString(16).padStart(2,'0');
+      const hexG = Math.round(rgb[1] * 255).toString(16).padStart(2,'0');
+      const hexB = Math.round(rgb[2] * 255).toString(16).padStart(2,'0');
+      colors.push(`#${hexR}${hexG}${hexB}`);
+    }
+    
+    return colors;
+  }
+  
+  // Helper: Convert HSL to RGB
+  function hslToRgb(h, s, l) {
+    let r, g, b;
+    if (s === 0) {
+      r = g = b = l;
+    } else {
+      const hue2rgb = (p, q, t) => {
+        if (t < 0) t += 1;
+        if (t > 1) t -= 1;
+        if (t < 1/6) return p + (q - p) * 6 * t;
+        if (t < 1/2) return q;
+        if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+        return p;
+      };
+      const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+      const p = 2 * l - q;
+      r = hue2rgb(p, q, h + 1/3);
+      g = hue2rgb(p, q, h);
+      b = hue2rgb(p, q, h - 1/3);
+    }
+    return [r, g, b];
+  }
+
+  // State management
+  let currentView = 'lk';
+  let currentTab = 'broker';
+  let highlightedBroker = null;
+  let companyData = {};
+  let lkCompanyData = {};
+  let lkGeo, plzGeo, lkToPlzCodes;
+  let plzRows, originalPlzRows;
+  let partitionedAssignments = null; // Store partitioned assignments
+  let allPartitions = {}; // Store all partitions: { broker: { subzones, plzToSubzone } }
+  let manualReassignments = new Map(); // Store manual reassignments: plz -> { broker, subzone }
+  let reassignmentMode = false; // Whether reassignment mode is active
+  let newBrokers = new Set(); // Track newly created brokers
+  let brokerMarkers = []; // Store marker references
+
+  // Helpers
+  function normPLZ(s){ return String(s ?? '').padStart(5,'0'); }
+  async function fetchJSON(p){ const r=await fetch(p); if(!r.ok) throw new Error('Missing: '+p); return r.json(); }
+  async function fetchCSV(p){
+    const r = await fetch(p);
+    if(!r.ok) throw new Error('Missing: '+p);
+    const t = await r.text();
+    return Papa.parse(t, { header:true, dynamicTyping:false, skipEmptyLines:true }).data;
+  }
+
+  const diagEl = document.getElementById('diag');
+  const badge = document.getElementById('lkBadge');
+  const legendContent = document.getElementById('legendContent');
+  const legendTitle = document.getElementById('legendTitle');
+
+  // Build adjacency graph of PLZ areas
+  function buildAdjacencyGraph(plzFeatures, brokerPLZs) {
+    const graph = new Map();
+    const plzIndex = new Map();
+    
+    // Index PLZ features
+    plzFeatures.forEach(f => {
+      const plz = f.properties._plz;
+      if (plz && brokerPLZs.has(plz)) {
+        plzIndex.set(plz, f);
+        graph.set(plz, new Set());
+      }
+    });
+
+    // Check adjacency using Turf.js
+    const plzList = Array.from(graph.keys());
+    for (let i = 0; i < plzList.length; i++) {
+      const plz1 = plzList[i];
+      const feat1 = plzIndex.get(plz1);
+      if (!feat1) continue;
+
+      for (let j = i + 1; j < plzList.length; j++) {
+        const plz2 = plzList[j];
+        const feat2 = plzIndex.get(plz2);
+        if (!feat2) continue;
+
+        try {
+          // Check if features touch or intersect
+          if (turf.booleanIntersects(feat1, feat2) || turf.booleanTouches(feat1, feat2)) {
+            graph.get(plz1).add(plz2);
+            graph.get(plz2).add(plz1);
+          }
+        } catch(e) {
+          // If geometry is invalid, skip
+        }
+      }
+    }
+
+    return { graph, plzIndex };
+  }
+
+  // Graph-based partitioning: spatial-first approach with company counts as adjustment
+  function partitionGraph(graph, plzIndex, companyData, brokerPLZs, numSubzones) {
+    const plzList = Array.from(graph.keys());
+    const totalCompanies = plzList.reduce((sum, plz) => sum + (companyData[plz] || 0), 0);
+    const targetPerZone = totalCompanies / numSubzones;
+
+    // Initialize subzones
+    const subzones = Array(numSubzones).fill(null).map(() => ({
+      plzs: [],
+      companies: 0,
+      frontier: new Set() // PLZs adjacent to this zone but not yet assigned
+    }));
+
+    const assigned = new Set();
+    const plzToSubzone = new Map();
+
+    // Step 1: Select spatially distributed seed PLZs (k-means style)
+    // Calculate centroids for all PLZs
+    const plzCentroids = new Map();
+    plzList.forEach(plz => {
+      try {
+        const feat = plzIndex.get(plz);
+        if (feat) {
+          const center = turf.centroid(feat);
+          plzCentroids.set(plz, center);
+        }
+      } catch(e) {
+        // Skip if geometry issues
+      }
+    });
+
+    // Simple k-means initialization: find spatially spread seeds
+    const seedPLZs = [];
+    if (plzList.length > 0) {
+      // First seed: use a central PLZ (or first available)
+      const firstPLZ = plzList[0];
+      seedPLZs.push(firstPLZ);
+      assigned.add(firstPLZ);
+      plzToSubzone.set(firstPLZ, 0);
+      subzones[0].plzs.push(firstPLZ);
+      subzones[0].companies += companyData[firstPLZ] || 0;
+      
+      // Initialize frontier for first zone
+      const neighbors = graph.get(firstPLZ) || new Set();
+      neighbors.forEach(n => {
+        if (!assigned.has(n)) {
+          subzones[0].frontier.add(n);
+        }
+      });
+
+      // Find other seeds that are maximally distant from existing seeds
+      for (let zoneIdx = 1; zoneIdx < numSubzones && zoneIdx < plzList.length; zoneIdx++) {
+        let bestSeed = null;
+        let maxMinDistance = -1;
+        
+        for (const candidate of plzList) {
+          if (assigned.has(candidate)) continue;
+          
+          const candidateCenter = plzCentroids.get(candidate);
+          if (!candidateCenter) continue;
+          
+          // Find minimum distance to any existing seed
+          let minDistance = Infinity;
+          for (const seedPLZ of seedPLZs) {
+            const seedCenter = plzCentroids.get(seedPLZ);
+            if (seedCenter) {
+              const distance = turf.distance(candidateCenter, seedCenter);
+              minDistance = Math.min(minDistance, distance);
+            }
+          }
+          
+          // Choose the candidate that is farthest from all existing seeds
+          if (minDistance > maxMinDistance) {
+            maxMinDistance = minDistance;
+            bestSeed = candidate;
+          }
+        }
+        
+        if (bestSeed) {
+          seedPLZs.push(bestSeed);
+          assigned.add(bestSeed);
+          plzToSubzone.set(bestSeed, zoneIdx);
+          subzones[zoneIdx].plzs.push(bestSeed);
+          subzones[zoneIdx].companies += companyData[bestSeed] || 0;
+          
+          // Initialize frontier
+          const neighbors = graph.get(bestSeed) || new Set();
+          neighbors.forEach(n => {
+            if (!assigned.has(n)) {
+              subzones[zoneIdx].frontier.add(n);
+            }
+          });
+        }
+      }
+    }
+
+    // Step 2: Region-growing - prioritize spatial contiguity, use company counts as tie-breaker
+    let iterations = 0;
+    const maxIterations = plzList.length * 3;
+    
+    while (assigned.size < plzList.length && iterations < maxIterations) {
+      iterations++;
+      let anyAssigned = false;
+      
+      // Collect all candidates from all frontiers
+      const allCandidates = [];
+      for (let zoneIdx = 0; zoneIdx < subzones.length; zoneIdx++) {
+        const zone = subzones[zoneIdx];
+        for (const candidate of zone.frontier) {
+          if (assigned.has(candidate)) {
+            zone.frontier.delete(candidate);
+            continue;
+          }
+          allCandidates.push({ candidate, sourceZone: zoneIdx });
+        }
+      }
+      
+      // For each candidate, find which zone it should belong to (spatially closest)
+      const candidateAssignments = [];
+      
+      for (const { candidate, sourceZone } of allCandidates) {
+        if (assigned.has(candidate)) continue;
+        
+        const candidateCenter = plzCentroids.get(candidate);
+        if (!candidateCenter) continue;
+        
+        const candidateCompanies = companyData[candidate] || 0;
+        
+        // Calculate distance and score for each zone
+        let bestZone = null;
+        let bestScore = Infinity;
+        
+        for (let zoneIdx = 0; zoneIdx < subzones.length; zoneIdx++) {
+          const zone = subzones[zoneIdx];
+          if (zone.plzs.length === 0) continue;
+          
+          // Calculate zone center
+          let zoneCenter = null;
+          try {
+            const zoneCentroids = zone.plzs
+              .map(p => plzCentroids.get(p))
+              .filter(c => c !== undefined);
+            if (zoneCentroids.length > 0) {
+              const avgLon = zoneCentroids.reduce((sum, c) => sum + c.geometry.coordinates[0], 0) / zoneCentroids.length;
+              const avgLat = zoneCentroids.reduce((sum, c) => sum + c.geometry.coordinates[1], 0) / zoneCentroids.length;
+              zoneCenter = turf.point([avgLon, avgLat]);
+            }
+          } catch(e) {
+            zoneCenter = plzCentroids.get(zone.plzs[0]);
+          }
+          
+          if (!zoneCenter) continue;
+          
+          // Primary: spatial distance
+          const spatialDistance = turf.distance(candidateCenter, zoneCenter);
+          
+          // Secondary: company count balance (only as tie-breaker, weight 0.05)
+          const newLoad = zone.companies + candidateCompanies;
+          const loadDiff = Math.abs(newLoad - targetPerZone);
+          
+          // Score: spatial distance is primary, load balance is tiny adjustment
+          const score = spatialDistance + (loadDiff / targetPerZone) * 0.05;
+          
+          if (score < bestScore) {
+            bestScore = score;
+            bestZone = zoneIdx;
+          }
+        }
+        
+        if (bestZone !== null) {
+          candidateAssignments.push({
+            candidate,
+            zone: bestZone,
+            score: bestScore
+          });
+        }
+      }
+      
+      // Sort by score and assign (best candidates first)
+      candidateAssignments.sort((a, b) => a.score - b.score);
+      
+      // Assign candidates, but only one per zone per iteration to maintain balance
+      const zonesAssignedThisIteration = new Set();
+      
+      for (const { candidate, zone: targetZone } of candidateAssignments) {
+        if (assigned.has(candidate)) continue;
+        if (zonesAssignedThisIteration.has(targetZone)) continue; // Only one per zone per iteration
+        
+        const candidateCompanies = companyData[candidate] || 0;
+        
+        assigned.add(candidate);
+        plzToSubzone.set(candidate, targetZone);
+        subzones[targetZone].plzs.push(candidate);
+        subzones[targetZone].companies += candidateCompanies;
+        zonesAssignedThisIteration.add(targetZone);
+        
+        // Remove from all frontiers
+        for (let z = 0; z < subzones.length; z++) {
+          subzones[z].frontier.delete(candidate);
+        }
+        
+        // Add neighbors to the target zone's frontier
+        const neighbors = graph.get(candidate) || new Set();
+        neighbors.forEach(n => {
+          if (!assigned.has(n)) {
+            subzones[targetZone].frontier.add(n);
+          }
+        });
+        
+        anyAssigned = true;
+      }
+      
+      // If no assignments made, break to avoid infinite loop
+      if (!anyAssigned) break;
+    }
+
+    // Step 3: Assign any remaining unassigned PLZs (should be rare, isolated areas)
+    const unassigned = plzList.filter(plz => !assigned.has(plz));
+    
+    for (const plz of unassigned) {
+      const plzCompanies = companyData[plz] || 0;
+      const plzCenter = plzCentroids.get(plz);
+      
+      // Find zone with nearest neighbor (spatial priority)
+      const neighbors = graph.get(plz) || new Set();
+      let bestZone = null;
+      let minDistance = Infinity;
+      
+      // First, try to find a zone with a direct neighbor
+      for (const neighbor of neighbors) {
+        if (plzToSubzone.has(neighbor)) {
+          bestZone = plzToSubzone.get(neighbor);
+          minDistance = 0; // Direct neighbor = distance 0
+          break;
+        }
+      }
+      
+      // If no direct neighbor, find closest zone by centroid distance
+      if (bestZone === null && plzCenter) {
+        for (let i = 0; i < subzones.length; i++) {
+          const zone = subzones[i];
+          if (zone.plzs.length === 0) continue;
+          
+          try {
+            const zoneCentroids = zone.plzs
+              .map(p => plzCentroids.get(p))
+              .filter(c => c !== undefined);
+            if (zoneCentroids.length > 0) {
+              const avgLon = zoneCentroids.reduce((sum, c) => sum + c.geometry.coordinates[0], 0) / zoneCentroids.length;
+              const avgLat = zoneCentroids.reduce((sum, c) => sum + c.geometry.coordinates[1], 0) / zoneCentroids.length;
+              const zoneCenter = turf.point([avgLon, avgLat]);
+              const distance = turf.distance(plzCenter, zoneCenter);
+              
+              if (distance < minDistance) {
+                minDistance = distance;
+                bestZone = i;
+              }
+            }
+          } catch(e) {
+            // Skip if error
+          }
+        }
+      }
+      
+      // Fallback: use least loaded zone
+      if (bestZone === null) {
+        let minLoad = Infinity;
+        for (let i = 0; i < subzones.length; i++) {
+          if (subzones[i].companies < minLoad) {
+            minLoad = subzones[i].companies;
+            bestZone = i;
+          }
+        }
+      }
+      
+      if (bestZone !== null) {
+        subzones[bestZone].plzs.push(plz);
+        subzones[bestZone].companies += plzCompanies;
+        plzToSubzone.set(plz, bestZone);
+        assigned.add(plz);
+      }
+    }
+
+    // Verify all PLZs assigned
+    if (assigned.size !== plzList.length) {
+      console.warn('Not all PLZs assigned:', plzList.length - assigned.size, 'missing');
+    }
+
+    return { subzones, plzToSubzone };
+  }
+
+  // Partition broker zone (single broker)
+  function partitionBrokerZone(broker, numSubzones) {
+    if (!broker) {
+      alert('Please select a broker');
+      return;
+    }
+
+    diagEl.textContent = `Partitioning ${broker} into ${numSubzones} subzones...`;
+
+    // Get all PLZs for this broker from CSV (source of truth)
+    const brokerPLZs = new Set();
+    const brokerPLZFeatures = [];
+    
+    // First, get from CSV to ensure we have all PLZs
+    plzRows.forEach(row => {
+      const rowBroker = row.owner || 'Unassigned';
+      if (rowBroker === broker) {
+        const plz = normPLZ(row.PLZ);
+        brokerPLZs.add(plz);
+      }
+    });
+
+    // Then find corresponding GeoJSON features
+    plzGeo.features.forEach(f => {
+      const plz = f.properties._plz;
+      if (brokerPLZs.has(plz)) {
+        brokerPLZFeatures.push(f);
+      }
+    });
+
+    if (brokerPLZs.size === 0) {
+      alert(`No PLZ areas found for ${broker}`);
+      return;
+    }
+
+    console.log(`Found ${brokerPLZs.size} PLZs for ${broker} in CSV, ${brokerPLZFeatures.length} in GeoJSON`);
+
+    // Build adjacency graph using only the broker's PLZ features
+    const { graph, plzIndex } = buildAdjacencyGraph(brokerPLZFeatures, brokerPLZs);
+
+    // Partition
+    const { subzones, plzToSubzone } = partitionGraph(graph, plzIndex, companyData, brokerPLZs, numSubzones);
+
+    // Check contiguity
+    const contiguityIssues = checkSubzoneContiguity(subzones, graph, plzToSubzone);
+    if (contiguityIssues.length > 0) {
+      console.warn('Contiguity issues found:', contiguityIssues);
+      const issueMsg = contiguityIssues.map(issue => 
+        `Subzone ${issue.subzone}: ${issue.disconnected} disconnected PLZs`
+      ).join(', ');
+      console.warn(issueMsg);
+    }
+
+    // Store in allPartitions (for multi-broker support)
+    allPartitions[broker] = {
+      subzones,
+      plzToSubzone,
+      originalAssignments: new Map(),
+      contiguityIssues
+    };
+
+    // Generate colors for subzones
+    const baseColor = BROKER_COLORS[broker] || '#d1d5db';
+    const subzoneColors = generateSubzoneColors(baseColor, numSubzones);
+
+    // Update PLZ features with subzone info and colors
+    plzGeo.features.forEach(f => {
+      const plz = f.properties._plz;
+      if (plzToSubzone.has(plz)) {
+        const subzone = plzToSubzone.get(plz);
+        allPartitions[broker].originalAssignments.set(plz, f.properties._owner);
+        f.properties._subzone = subzone;
+        f.properties._partitioned = true;
+        f.properties._partitionBroker = broker;
+        f.properties._subzoneColor = subzoneColors[subzone];
+      } else if (f.properties._partitionBroker === broker) {
+        // Clear old partition data if broker was repartitioned
+        f.properties._subzone = null;
+        f.properties._partitioned = false;
+        f.properties._partitionBroker = null;
+        f.properties._subzoneColor = null;
+      }
+    });
+
+    // Update visualization
+    updateAllPartitionsVisualization();
+    
+    // Focus on this broker's zone (zoom and make others transparent)
+    focusOnBrokerZone(broker);
+    
+    // Update legend to show all partitions
+    createAllPartitionsLegend();
+
+    // Show info with contiguity status
+    let info = `${broker} partitioned:\n`;
+    info += subzones.map((zone, i) => {
+      const issue = contiguityIssues.find(iss => iss.subzone === i + 1);
+      const status = issue ? ` ⚠️ (${issue.disconnected} disconnected)` : ' ✓';
+      return `Subzone ${i+1}: ${zone.plzs.length} PLZs, ${zone.companies.toLocaleString()} companies${status}`;
+    }).join('\n');
+    
+    if (contiguityIssues.length > 0) {
+      info += `\n\n⚠️ Some subzones have disconnected areas. Consider adjusting the partition.`;
+    }
+    
+    // Show other partitioned brokers
+    const otherPartitioned = Object.keys(allPartitions).filter(b => b !== broker);
+    if (otherPartitioned.length > 0) {
+      info += `\n\nOther partitioned brokers: ${otherPartitioned.join(', ')}`;
+    }
+    
+    document.getElementById('partitionInfo').textContent = info;
+
+    // Calculate totals for verification
+    const totalProcessed = subzones.reduce((sum, z) => sum + z.companies, 0);
+    const totalExpected = Array.from(brokerPLZs).reduce((sum, plz) => sum + (companyData[plz] || 0), 0);
+    
+    let statusMsg = `✅ Partitioned ${broker} into ${numSubzones} subzones\n`;
+    statusMsg += `${brokerPLZs.size} PLZs in CSV, ${brokerPLZFeatures.length} in GeoJSON\n`;
+    statusMsg += `Total companies: ${totalProcessed.toLocaleString()} / ${totalExpected.toLocaleString()}`;
+    if (totalProcessed !== totalExpected) {
+      statusMsg += `\n⚠️ ${(totalExpected - totalProcessed).toLocaleString()} companies missing (PLZs not in GeoJSON)`;
+    }
+    diagEl.textContent = statusMsg;
+    
+    // Auto-save state
+    saveStateToLocalStorage();
+  }
+
+
+  // Update visualization for all partitions
+  function updateAllPartitionsVisualization() {
+    if (map.getSource('plz')) {
+      map.getSource('plz').setData(plzGeo);
+    }
+    
+    if (map.getLayer('plz-fill')) {
+      // Priority: reassigned color > subzone color > owner color
+      const expression = [
+        'case',
+        ['has', '_subzoneColor'],
+        ['get', '_subzoneColor'],
+        [
+          'match',
+          ['get', '_owner'],
+          ...Object.entries(BROKER_COLORS).flat(),
+          '#d1d5db'
+        ]
+      ];
+      map.setPaintProperty('plz-fill', 'fill-color', expression);
+    }
+    
+    if (map.getLayer('plz-line')) {
+      map.setPaintProperty('plz-line', 'line-color', [
+        'case',
+        ['get', '_partitioned'],
+        '#000000',
+        '#111111'
+      ]);
+      map.setPaintProperty('plz-line', 'line-width', [
+        'case',
+        ['get', '_partitioned'],
+        2.5,
+        0.8
+      ]);
+    }
+    
+    // Switch to PLZ view
+    currentView = 'plz';
+    map.setLayoutProperty('lk-fill', 'visibility', 'none');
+    map.setLayoutProperty('lk-line', 'visibility', 'none');
+    map.setLayoutProperty('plz-fill', 'visibility', 'visible');
+    map.setLayoutProperty('plz-line', 'visibility', 'visible');
+  }
+
+  // Create legend for all partitions
+  function createAllPartitionsLegend() {
+    let legendItems = '<div style="font-weight:600; margin-bottom:8px; font-size:13px;">All Partitions</div>';
+    
+    Object.entries(allPartitions).forEach(([broker, partition]) => {
+      const baseColor = BROKER_COLORS[broker] || '#d1d5db';
+      const numSubzones = partition.subzones.length;
+      const subzoneColors = generateSubzoneColors(baseColor, numSubzones);
+      
+      legendItems += `<div style="margin-top:8px; font-weight:500; font-size:12px;">${broker}</div>`;
+      
+      partition.subzones.forEach((zone, i) => {
+        const color = subzoneColors[i];
+        const reassignedCount = Array.from(manualReassignments.values())
+          .filter(r => r.broker === broker && r.subzone === i).length;
+        const displayCount = zone.plzs.length - reassignedCount;
+        
+        legendItems += `<div class="legend-item" style="cursor:default; margin-left:12px;">
+          <div class="legend-color" style="background-color:${color}"></div>
+          <span>Subzone ${i+1}: ${displayCount} PLZs, ${zone.companies.toLocaleString()} companies</span>
+        </div>`;
+      });
+    });
+    
+    // Show new brokers if any
+    if (newBrokers.size > 0) {
+      legendItems += '<div style="margin-top:12px; font-weight:500; font-size:12px; color:#28a745;">New Brokers</div>';
+      newBrokers.forEach(broker => {
+        const color = BROKER_COLORS[broker] || '#28a745';
+        legendItems += `<div class="legend-item" style="cursor:default;">
+          <div class="legend-color" style="background-color:${color}"></div>
+          <span>${broker}</span>
+        </div>`;
+      });
+    }
+    
+    legendContent.innerHTML = legendItems;
+  }
+
+  // Check contiguity of subzones
+  function checkSubzoneContiguity(subzones, graph, plzToSubzone) {
+    const issues = [];
+    subzones.forEach((zone, zoneIndex) => {
+      const plzs = zone.plzs;
+      if (plzs.length === 0) return;
+      
+      // Build subgraph for this subzone
+      const visited = new Set();
+      const queue = [plzs[0]];
+      visited.add(plzs[0]);
+      
+      while (queue.length > 0) {
+        const current = queue.shift();
+        const neighbors = graph.get(current) || new Set();
+        neighbors.forEach(neighbor => {
+          if (plzToSubzone.get(neighbor) === zoneIndex && !visited.has(neighbor)) {
+            visited.add(neighbor);
+            queue.push(neighbor);
+          }
+        });
+      }
+      
+      if (visited.size !== plzs.length) {
+        issues.push({
+          subzone: zoneIndex + 1,
+          total: plzs.length,
+          connected: visited.size,
+          disconnected: plzs.length - visited.size
+        });
+      }
+    });
+    return issues;
+  }
+
+  // Update visualization with subzones
+  function updatePartitionedVisualization(broker, numSubzones, subzones) {
+    // Update PLZ fill layer - need to update source data first (colors are already in properties)
+    if (map.getSource('plz')) {
+      map.getSource('plz').setData(plzGeo);
+    }
+
+    // Update PLZ fill layer - use stored color property directly
+    if (map.getLayer('plz-fill')) {
+      // Count how many features have subzone colors
+      let coloredCount = 0;
+      plzGeo.features.forEach(f => {
+        if (f.properties._subzoneColor) coloredCount++;
+      });
+      console.log(`Updating visualization: ${coloredCount} PLZs with subzone colors`);
+      
+      // Use case expression: if _subzoneColor exists and is truthy, use it, otherwise use owner color
+      const expression = [
+        'case',
+        ['has', '_subzoneColor'],  // Check if property exists
+        ['get', '_subzoneColor'],   // Use subzone color
+        [  // Otherwise use normal broker colors
+          'match',
+          ['get', '_owner'],
+          ...Object.entries(BROKER_COLORS).flat(),
+          '#d1d5db'
+        ]
+      ];
+      
+      map.setPaintProperty('plz-fill', 'fill-color', expression);
+      console.log('Color expression applied');
+    }
+
+    // Update PLZ line layer to show subzone boundaries with thicker, darker lines
+    if (map.getLayer('plz-line')) {
+      // Make partitioned zones have thicker, darker borders for better visibility
+      map.setPaintProperty('plz-line', 'line-color', [
+        'case',
+        ['get', '_partitioned'],
+        '#000000', // Black borders for partitioned zones (makes subzones more visible)
+        '#111111' // Normal borders
+      ]);
+      
+      map.setPaintProperty('plz-line', 'line-width', [
+        'case',
+        ['get', '_partitioned'],
+        2.5, // Thicker lines for partitioned zones to show boundaries clearly
+        0.8
+      ]);
+    }
+
+    // Switch to PLZ view to see subzones
+    currentView = 'plz';
+    map.setLayoutProperty('lk-fill', 'visibility', 'none');
+    map.setLayoutProperty('lk-line', 'visibility', 'none');
+    map.setLayoutProperty('plz-fill', 'visibility', 'visible');
+    map.setLayoutProperty('plz-line', 'visibility', 'visible');
+
+    // Zoom to broker's territory
+    const brokerFeatures = plzGeo.features.filter(f => 
+      f.properties._partitioned && f.properties._partitionBroker === broker
+    );
+    if (brokerFeatures.length > 0) {
+      try {
+        const combined = turf.featureCollection(brokerFeatures);
+        const bbox = turf.bbox(combined);
+        map.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: 50 });
+      } catch(e) {
+        console.error('Error fitting bounds:', e);
+      }
+    }
+  }
+
+  // Clear partitioning (can clear all or just selected broker)
+  function clearPartitioning(clearAll = true, brokerToClear = null) {
+    if (clearAll) {
+    partitionedAssignments = null;
+      allPartitions = {};
+      manualReassignments.clear();
+      newBrokers.clear();
+      reassignmentMode = false;
+      if (document.getElementById('reassignmentMode')) {
+        document.getElementById('reassignmentMode').checked = false;
+        document.getElementById('reassignmentControls').style.display = 'none';
+      }
+      
+    plzGeo.features.forEach(f => {
+      f.properties._subzone = null;
+      f.properties._partitioned = false;
+      f.properties._partitionBroker = null;
+      f.properties._subzoneColor = null;
+        f.properties._reassignedBroker = null;
+      });
+      
+      // Clear localStorage
+      localStorage.removeItem('germanyMapPartitions');
+      diagEl.textContent = 'All partitioning cleared';
+    } else if (brokerToClear) {
+      // Clear specific broker's partition
+      delete allPartitions[brokerToClear];
+      
+      plzGeo.features.forEach(f => {
+        if (f.properties._partitionBroker === brokerToClear) {
+          f.properties._subzone = null;
+          f.properties._partitioned = false;
+          f.properties._partitionBroker = null;
+          f.properties._subzoneColor = null;
+        }
+      });
+      
+      saveStateToLocalStorage();
+      diagEl.textContent = `Partition cleared for ${brokerToClear}`;
+    }
+
+    // Reset visualization
+    if (map.getSource('plz')) {
+      map.getSource('plz').setData(plzGeo);
+    }
+    
+    if (map.getLayer('plz-fill')) {
+      const expression = [
+        'case',
+        ['has', '_subzoneColor'],
+        ['get', '_subzoneColor'],
+        [
+        'match',
+        ['get', '_owner'],
+        ...Object.entries(BROKER_COLORS).flat(),
+        '#d1d5db'
+        ]
+      ];
+      map.setPaintProperty('plz-fill', 'fill-color', expression);
+    }
+    
+    if (map.getLayer('plz-line')) {
+      map.setPaintProperty('plz-line', 'line-width', [
+        'case',
+        ['get', '_partitioned'],
+        2.5,
+        0.8
+      ]);
+      map.setPaintProperty('plz-line', 'line-color', [
+        'case',
+        ['get', '_partitioned'],
+        '#000000',
+        '#111111'
+      ]);
+    }
+
+    document.getElementById('partitionInfo').textContent = '';
+    
+    // Update legend
+    if (currentTab === 'partition') {
+      if (Object.keys(allPartitions).length > 0) {
+        createAllPartitionsLegend();
+      } else {
+      legendTitle.textContent = 'Broker Legend';
+      createBrokerLegend(calculateBrokerProspects(plzRows, companyData));
+      }
+    }
+  }
+
+  // Save state to file (Windows file system)
+  function saveStateToFile() {
+    try {
+      // Prompt for state name
+      const stateName = prompt('Enter a name for this state:', 
+        `State_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}`);
+      
+      if (!stateName || stateName.trim() === '') {
+        diagEl.textContent = 'Save cancelled - no name provided';
+        return false;
+      }
+      
+      // Convert Maps to plain objects for JSON serialization
+      const state = {
+        version: '1.0',
+        name: stateName.trim(),
+        allPartitions: {},
+        manualReassignments: [],
+        newBrokers: Array.from(newBrokers),
+        timestamp: new Date().toISOString(),
+        description: `Partitioning state: ${Object.keys(allPartitions).length} brokers partitioned, ${manualReassignments.size} reassignments`
+      };
+      
+      // Serialize allPartitions
+      Object.entries(allPartitions).forEach(([broker, partition]) => {
+        state.allPartitions[broker] = {
+          subzones: partition.subzones.map(zone => ({
+            plzs: zone.plzs,
+            companies: zone.companies
+          })),
+          plzToSubzone: Array.from(partition.plzToSubzone.entries())
+        };
+      });
+      
+      // Serialize manualReassignments
+      manualReassignments.forEach((value, key) => {
+        state.manualReassignments.push([key, value]);
+      });
+      
+      // Create JSON blob and download
+      const json = JSON.stringify(state, null, 2);
+      const blob = new Blob([json], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const safeName = stateName.trim().replace(/[^a-z0-9]/gi, '_').toLowerCase();
+      a.href = url;
+      a.download = `germany_map_state_${safeName}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      
+      diagEl.textContent = `✅ State "${stateName}" saved to file`;
+      return true;
+    } catch (e) {
+      console.error('Error saving state:', e);
+      diagEl.textContent = '❌ Error saving state: ' + e.message;
+      return false;
+    }
+  }
+
+  // Save state to localStorage (for auto-save, kept for backward compatibility)
+  function saveStateToLocalStorage() {
+    try {
+      // Convert Maps to plain objects for JSON serialization
+      const state = {
+        allPartitions: {},
+        manualReassignments: [],
+        newBrokers: Array.from(newBrokers),
+        timestamp: new Date().toISOString()
+      };
+      
+      // Serialize allPartitions
+      Object.entries(allPartitions).forEach(([broker, partition]) => {
+        state.allPartitions[broker] = {
+          subzones: partition.subzones.map(zone => ({
+            plzs: zone.plzs,
+            companies: zone.companies
+          })),
+          plzToSubzone: Array.from(partition.plzToSubzone.entries())
+        };
+      });
+      
+      // Serialize manualReassignments
+      manualReassignments.forEach((value, key) => {
+        state.manualReassignments.push([key, value]);
+      });
+      
+      localStorage.setItem('germanyMapPartitions', JSON.stringify(state));
+      return true;
+    } catch (e) {
+      console.error('Error saving state to localStorage:', e);
+      return false;
+    }
+  }
+
+  // Load state from file (Windows file system)
+  function loadStateFromFile(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      
+      reader.onload = (e) => {
+        try {
+          const state = JSON.parse(e.target.result);
+          
+          // Validate state structure
+          if (!state.allPartitions && !state.version) {
+            throw new Error('Invalid state file format');
+          }
+          
+          // Clear current state
+          clearPartitioning();
+          
+          // Restore allPartitions
+          allPartitions = {};
+          Object.entries(state.allPartitions || {}).forEach(([broker, partition]) => {
+            allPartitions[broker] = {
+              subzones: partition.subzones.map(zone => ({
+                plzs: zone.plzs,
+                companies: zone.companies,
+                frontier: new Set()
+              })),
+              plzToSubzone: new Map(partition.plzToSubzone || [])
+            };
+          });
+          
+          // Restore manualReassignments
+          manualReassignments = new Map(state.manualReassignments || []);
+          
+          // Restore newBrokers
+          newBrokers = new Set(state.newBrokers || []);
+          
+          // Update PLZ features
+          plzGeo.features.forEach(f => {
+            const plz = f.properties._plz;
+            
+            // Find which partition this PLZ belongs to
+            for (const [broker, partition] of Object.entries(allPartitions)) {
+              if (partition.plzToSubzone.has(plz)) {
+                const subzone = partition.plzToSubzone.get(plz);
+                const baseColor = BROKER_COLORS[broker] || '#d1d5db';
+                const numSubzones = partition.subzones.length;
+                const subzoneColors = generateSubzoneColors(baseColor, numSubzones);
+                
+                f.properties._subzone = subzone;
+                f.properties._partitioned = true;
+                f.properties._partitionBroker = broker;
+                f.properties._subzoneColor = subzoneColors[subzone];
+                
+                // Check for manual reassignment
+                if (manualReassignments.has(plz)) {
+                  const reassignment = manualReassignments.get(plz);
+                  f.properties._reassignedBroker = reassignment.broker;
+                  f.properties._owner = reassignment.broker;
+                  // Update color for reassigned broker
+                  const reassignColor = BROKER_COLORS[reassignment.broker] || '#28a745';
+                  f.properties._subzoneColor = reassignColor;
+                }
+                break;
+              }
+            }
+          });
+          
+          // Update visualization
+          updateAllPartitionsVisualization();
+          createAllPartitionsLegend();
+          
+          // Update broker select dropdown
+          updateReassignBrokerSelect();
+          
+          const stateName = state.name || 'Unnamed';
+          const timestamp = state.timestamp ? new Date(state.timestamp).toLocaleString() : 'Unknown date';
+          diagEl.textContent = `✅ State "${stateName}" loaded (saved: ${timestamp})`;
+          resolve(true);
+        } catch (e) {
+          console.error('Error loading state:', e);
+          diagEl.textContent = '❌ Error loading state: ' + e.message;
+          reject(e);
+        }
+      };
+      
+      reader.onerror = () => {
+        diagEl.textContent = '❌ Error reading file';
+        reject(new Error('File read error'));
+      };
+      
+      reader.readAsText(file);
+    });
+  }
+
+  // Load state from localStorage (for backward compatibility)
+  function loadStateFromLocalStorage() {
+    try {
+      const saved = localStorage.getItem('germanyMapPartitions');
+      if (!saved) {
+        diagEl.textContent = 'No saved state found in browser storage';
+        return false;
+      }
+      
+      const state = JSON.parse(saved);
+      
+      // Clear current state
+      clearPartitioning();
+      
+      // Restore allPartitions
+      allPartitions = {};
+      Object.entries(state.allPartitions || {}).forEach(([broker, partition]) => {
+        allPartitions[broker] = {
+          subzones: partition.subzones.map(zone => ({
+            plzs: zone.plzs,
+            companies: zone.companies,
+            frontier: new Set()
+          })),
+          plzToSubzone: new Map(partition.plzToSubzone || [])
+        };
+      });
+      
+      // Restore manualReassignments
+      manualReassignments = new Map(state.manualReassignments || []);
+      
+      // Restore newBrokers
+      newBrokers = new Set(state.newBrokers || []);
+      
+      // Update PLZ features
+      plzGeo.features.forEach(f => {
+        const plz = f.properties._plz;
+        
+        // Find which partition this PLZ belongs to
+        for (const [broker, partition] of Object.entries(allPartitions)) {
+          if (partition.plzToSubzone.has(plz)) {
+            const subzone = partition.plzToSubzone.get(plz);
+            const baseColor = BROKER_COLORS[broker] || '#d1d5db';
+            const numSubzones = partition.subzones.length;
+            const subzoneColors = generateSubzoneColors(baseColor, numSubzones);
+            
+            f.properties._subzone = subzone;
+            f.properties._partitioned = true;
+            f.properties._partitionBroker = broker;
+            f.properties._subzoneColor = subzoneColors[subzone];
+            
+            // Check for manual reassignment
+            if (manualReassignments.has(plz)) {
+              const reassignment = manualReassignments.get(plz);
+              f.properties._reassignedBroker = reassignment.broker;
+              f.properties._owner = reassignment.broker;
+              // Update color for reassigned broker
+              const reassignColor = BROKER_COLORS[reassignment.broker] || '#28a745';
+              f.properties._subzoneColor = reassignColor;
+            }
+            break;
+          }
+        }
+      });
+      
+      // Update visualization
+      updateAllPartitionsVisualization();
+      createAllPartitionsLegend();
+      
+      // Update broker select dropdown
+      updateReassignBrokerSelect();
+      
+      diagEl.textContent = `✅ State loaded from browser storage (saved: ${new Date(state.timestamp).toLocaleString()})`;
+      return true;
+    } catch (e) {
+      console.error('Error loading state:', e);
+      diagEl.textContent = '❌ Error loading state: ' + e.message;
+      return false;
+    }
+  }
+
+  // Reassign PLZ to different broker
+  function reassignPLZ(plz, targetBroker) {
+    if (!targetBroker || targetBroker === '') {
+      alert('Please select a broker to reassign to');
+      return;
+    }
+    
+    const plzFeature = plzGeo.features.find(f => f.properties._plz === plz);
+    if (!plzFeature) return;
+    
+    // Get original broker and subzone
+    const originalBroker = plzFeature.properties._partitionBroker || plzFeature.properties._owner || 'Unassigned';
+    const originalSubzone = plzFeature.properties._subzone;
+    
+    // Store reassignment
+    manualReassignments.set(plz, {
+      broker: targetBroker,
+      subzone: originalSubzone,
+      originalBroker: originalBroker
+    });
+    
+    // Update feature properties
+    plzFeature.properties._reassignedBroker = targetBroker;
+    plzFeature.properties._owner = targetBroker;
+    
+    // Update color - use target broker's color
+    const targetColor = BROKER_COLORS[targetBroker];
+    if (targetColor) {
+      plzFeature.properties._subzoneColor = targetColor;
+    } else {
+      // New broker - assign a color
+      if (!BROKER_COLORS[targetBroker]) {
+        BROKER_COLORS[targetBroker] = '#28a745'; // Green for new brokers
+        newBrokers.add(targetBroker);
+      }
+      plzFeature.properties._subzoneColor = BROKER_COLORS[targetBroker];
+    }
+    
+    // Update source data
+    if (map.getSource('plz')) {
+      map.getSource('plz').setData(plzGeo);
+    }
+    
+    // Update legend
+    createAllPartitionsLegend();
+    
+    // Save state
+    saveStateToLocalStorage();
+    
+    diagEl.textContent = `Reassigned PLZ ${plz} from ${originalBroker} to ${targetBroker}`;
+  }
+
+  // Reassign entire subzone to different broker
+  function reassignSubzone(broker, subzoneIndex, targetBroker) {
+    if (!targetBroker || targetBroker === '') {
+      alert('Please select a broker to reassign to');
+      return;
+    }
+    
+    if (!allPartitions[broker] || !allPartitions[broker].subzones[subzoneIndex]) {
+      alert('Subzone not found');
+      return;
+    }
+    
+    const subzone = allPartitions[broker].subzones[subzoneIndex];
+    const plzs = subzone.plzs;
+    let reassignedCount = 0;
+    
+    // Reassign all PLZs in this subzone
+    plzs.forEach(plz => {
+      const plzFeature = plzGeo.features.find(f => f.properties._plz === plz);
+      if (!plzFeature) return;
+      
+      // Store reassignment
+      manualReassignments.set(plz, {
+        broker: targetBroker,
+        subzone: subzoneIndex,
+        originalBroker: broker
+      });
+      
+      // Update feature properties
+      plzFeature.properties._reassignedBroker = targetBroker;
+      plzFeature.properties._owner = targetBroker;
+      
+      // Update color - use target broker's color
+      const targetColor = BROKER_COLORS[targetBroker];
+      if (targetColor) {
+        plzFeature.properties._subzoneColor = targetColor;
+      } else {
+        if (!BROKER_COLORS[targetBroker]) {
+          BROKER_COLORS[targetBroker] = '#28a745';
+          newBrokers.add(targetBroker);
+        }
+        plzFeature.properties._subzoneColor = BROKER_COLORS[targetBroker];
+      }
+      
+      reassignedCount++;
+    });
+    
+    // Update source data
+    if (map.getSource('plz')) {
+      map.getSource('plz').setData(plzGeo);
+    }
+    
+    // Update legend
+    createAllPartitionsLegend();
+    
+    // Save state
+    saveStateToLocalStorage();
+    
+    diagEl.textContent = `Reassigned subzone ${subzoneIndex + 1} of ${broker} (${reassignedCount} PLZs) to ${targetBroker}`;
+  }
+
+  // Focus on broker zone (zoom and make others transparent)
+  function focusOnBrokerZone(broker) {
+    // Get all PLZs for this broker
+    const brokerPLZs = new Set();
+    plzRows.forEach(row => {
+      const rowBroker = row.owner || 'Unassigned';
+      if (rowBroker === broker) {
+        brokerPLZs.add(normPLZ(row.PLZ));
+      }
+    });
+    
+    // Find corresponding GeoJSON features
+    const brokerFeatures = plzGeo.features.filter(f => {
+      const plz = f.properties._plz;
+      return brokerPLZs.has(plz);
+    });
+    
+    if (brokerFeatures.length === 0) return;
+    
+    // Zoom to broker's territory
+    try {
+      const combined = turf.featureCollection(brokerFeatures);
+      const bbox = turf.bbox(combined);
+      map.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: 50 });
+    } catch(e) {
+      console.error('Error fitting bounds:', e);
+    }
+    
+    // Make other zones transparent
+    if (map.getLayer('plz-fill')) {
+      map.setPaintProperty('plz-fill', 'fill-opacity', [
+        'case',
+        ['in', ['get', '_plz'], ['literal', Array.from(brokerPLZs)]],
+        0.7, // Full opacity for broker's zone
+        0.15 // Very transparent for others
+      ]);
+    }
+    
+    // Switch to PLZ view
+    currentView = 'plz';
+    map.setLayoutProperty('lk-fill', 'visibility', 'none');
+    map.setLayoutProperty('lk-line', 'visibility', 'none');
+    map.setLayoutProperty('plz-fill', 'visibility', 'visible');
+    map.setLayoutProperty('plz-line', 'visibility', 'visible');
+  }
+
+  // Reset focus (restore normal opacity)
+  function resetFocus() {
+    if (map.getLayer('plz-fill')) {
+      map.setPaintProperty('plz-fill', 'fill-opacity', 0.7);
+    }
+  }
+
+  // Update reassign broker select dropdown
+  function updateReassignBrokerSelect() {
+    const select = document.getElementById('reassignBrokerSelect');
+    select.innerHTML = '<option value="">Select broker...</option>';
+    
+    // Add existing brokers
+    Object.keys(BROKER_COLORS).forEach(broker => {
+      if (broker !== 'Unassigned') {
+        const option = document.createElement('option');
+        option.value = broker;
+        option.textContent = broker;
+        select.appendChild(option);
+      }
+    });
+    
+    // Add new brokers
+    newBrokers.forEach(broker => {
+      if (!BROKER_COLORS[broker]) {
+        const option = document.createElement('option');
+        option.value = broker;
+        option.textContent = broker + ' (new)';
+        select.appendChild(option);
+      }
+    });
+  }
+
+  // Export partitioned assignments
+  function exportPartitionedAssignments() {
+    if (Object.keys(allPartitions).length === 0 && partitionedAssignments === null) {
+      alert('No partitioning to export. Please partition zones first.');
+      return;
+    }
+
+    // Create new assignments
+    const newRows = [];
+    plzRows.forEach(row => {
+      const plz = normPLZ(row.PLZ);
+        const newRow = { ...row };
+      
+      // Check for manual reassignment first
+      if (manualReassignments.has(plz)) {
+        const reassignment = manualReassignments.get(plz);
+        newRow.owner = reassignment.broker;
+        newRows.push(newRow);
+        return;
+      }
+      
+      // Check if PLZ is in any partition
+      let found = false;
+      for (const [broker, partition] of Object.entries(allPartitions)) {
+        if (partition.plzToSubzone.has(plz)) {
+          const subzone = partition.plzToSubzone.get(plz);
+          newRow.owner = `${broker} - Subzone ${subzone + 1}`;
+          newRows.push(newRow);
+          found = true;
+          break;
+        }
+      }
+      
+      // If not found in allPartitions, check old partitionedAssignments (backward compatibility)
+      if (!found && partitionedAssignments && partitionedAssignments.plzToSubzone.has(plz)) {
+        const subzone = partitionedAssignments.plzToSubzone.get(plz);
+        newRow.owner = `${partitionedAssignments.broker} - Subzone ${subzone + 1}`;
+        newRows.push(newRow);
+        found = true;
+      }
+      
+      // If still not found, keep original
+      if (!found) {
+        newRows.push(newRow);
+      }
+    });
+
+    // Convert to CSV
+    const headers = Object.keys(newRows[0]);
+    const csv = [
+      headers.join(','),
+      ...newRows.map(row => headers.map(h => {
+        const val = row[h] || '';
+        return val.includes(',') ? `"${val}"` : val;
+      }).join(','))
+    ].join('\n');
+
+    // Download
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const timestamp = new Date().toISOString().slice(0, 10);
+    a.href = url;
+    a.download = `assignments_partitioned_${timestamp}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    
+    diagEl.textContent = `✅ Exported ${newRows.length} assignments to CSV`;
+  }
+
+  // Highlight broker zones
+  function highlightBrokerZones(broker) {
+    if (currentTab !== 'broker') return;
+    const lkVisible = map.getLayoutProperty('lk-fill', 'visibility') === 'visible';
+    const layers = lkVisible ? ['lk-fill', 'lk-line'] : ['plz-fill', 'plz-line'];
+
+    if (highlightedBroker === broker) {
+      highlightedBroker = null;
+      layers.forEach(layer => {
+        if (layer.includes('fill')) {
+          map.setPaintProperty(layer, 'fill-opacity', layer === 'lk-fill' ? 0.8 : 0.7);
+        } else {
+          map.setPaintProperty(layer, 'line-width', layer === 'lk-line' ? 1.5 : 0.8);
+        }
+      });
+      document.querySelectorAll('.legend-item.highlighted').forEach(el => {
+        el.classList.remove('highlighted');
+      });
+    } else {
+      highlightedBroker = broker;
+      layers.forEach(layer => {
+        if (layer.includes('fill')) {
+          map.setPaintProperty(layer, 'fill-opacity', 
+            ['match', ['get', '_owner'], broker, 1.0, layer === 'lk-fill' ? 0.3 : 0.2]);
+        } else {
+          map.setPaintProperty(layer, 'line-width',
+            ['match', ['get', '_owner'], broker, 4, layer === 'lk-line' ? 1.5 : 0.8]);
+        }
+      });
+      document.querySelectorAll('.legend-item.highlighted').forEach(el => {
+        el.classList.remove('highlighted');
+      });
+      document.querySelector(`.legend-item[data-broker="${broker}"]`)?.classList.add('highlighted');
+    }
+  }
+
+  // Calculate broker prospects
+  function calculateBrokerProspects(plzRows, companyData) {
+    const brokerProspects = {};
+    plzRows.forEach(row => {
+      const broker = row.owner || 'Unassigned';
+      const plz = normPLZ(row.PLZ);
+      const companyCount = companyData[plz] || 0;
+      if (broker && broker !== 'Unassigned') {
+        if (!brokerProspects[broker]) {
+          brokerProspects[broker] = 0;
+        }
+        brokerProspects[broker] += companyCount;
+      }
+    });
+    return brokerProspects;
+  }
+
+  // Create broker legend
+  function createBrokerLegend(brokerProspects) {
+    const legendItems = Object.entries(BROKER_COLORS).map(([broker, color]) => {
+      const prospectCount = brokerProspects[broker] || 0;
+      return `<div class="legend-item" data-broker="${broker}">
+        <div class="legend-color" style="background-color:${color}"></div>
+        <span>${broker}${prospectCount > 0 ? ` (${prospectCount.toLocaleString()})` : ''}</span>
+      </div>`;
+    }).join('');
+
+    legendContent.innerHTML = legendItems;
+
+    document.querySelectorAll('.legend-item').forEach(item => {
+      item.addEventListener('click', () => {
+        const broker = item.dataset.broker;
+        highlightBrokerZones(broker);
+      });
+    });
+  }
+
+  // Create subzone legend
+  function createSubzoneLegend(broker, numSubzones, subzones) {
+    const baseColor = BROKER_COLORS[broker] || '#666666';
+    const subzoneColors = generateSubzoneColors(baseColor, numSubzones);
+    
+    let legendItems = `<div style="font-weight:600; margin-bottom:8px; font-size:13px;">${broker} - Subzones</div>`;
+    
+    subzones.forEach((zone, i) => {
+      const color = subzoneColors[i];
+      legendItems += `<div class="legend-item" style="cursor:default;">
+        <div class="legend-color" style="background-color:${color}"></div>
+        <span>Subzone ${i+1}: ${zone.plzs.length} PLZs, ${zone.companies.toLocaleString()} companies</span>
+      </div>`;
+    });
+    
+    legendContent.innerHTML = legendItems;
+  }
+
+  // Create company heat map legend
+  function createCompanyLegend() {
+    const lkValues = Object.values(lkCompanyData).filter(v => v > 0);
+    const plzValues = Object.values(companyData).filter(v => v > 0);
+    
+    if (lkValues.length === 0) {
+      legendContent.innerHTML = '<div style="font-size:11px; color:#666;">No company data available</div>';
+      return;
+    }
+
+    const maxLK = Math.max(...lkValues);
+    const maxPLZ = Math.max(...plzValues);
+    const maxCount = currentView === 'lk' ? maxLK : maxPLZ;
+
+    const legendItems = `
+      <div style="margin-bottom:8px; font-size:11px; color:#666;">Company Density</div>
+      <div style="display:flex; align-items:flex-start; gap:10px;">
+        <div class="heat-gradient"></div>
+        <div style="font-size:11px; display:flex; flex-direction:column; justify-content:space-between; height:120px;">
+          <div>High: ${maxCount.toLocaleString()}</div>
+          <div>Low: 1</div>
+          <div>None: 0</div>
+        </div>
+      </div>
+    `;
+
+    legendContent.innerHTML = legendItems;
+  }
+
+  // Get heat map color
+  function getHeatMapColor(count, maxCount) {
+    if (count === 0 || maxCount === 0) return 'rgba(240, 240, 240, 0.3)';
+    const intensity = Math.min(count / maxCount, 1);
+    if (intensity < 0.5) {
+      const t = intensity * 2;
+      return `rgba(${Math.round(255 * t)}, 255, ${Math.round(100 * (1 - t))}, 0.7)`;
+    } else {
+      const t = (intensity - 0.5) * 2;
+      return `rgba(255, ${Math.round(255 * (1 - t))}, 0, 0.7)`;
+    }
+  }
+
+  // Simple function to add broker pins at their PLZ
+  function addBrokerPins() {
+    // Clear existing markers
+    brokerMarkers.forEach(m => m.remove());
+    brokerMarkers = [];
+
+    // Only show in broker and partition tabs
+    if (currentTab !== 'broker' && currentTab !== 'partition') return;
+    if (!plzGeo || !plzGeo.features) return;
+
+    // Load broker addresses CSV
+    fetchCSV('Broker addresses.csv').then(rows => {
+      rows.forEach(row => {
+        const firstName = (row['First name (legal)'] || '').trim();
+        const lastName = (row['Last name (legal)'] || '').trim();
+        const fullName = `${firstName} ${lastName}`;
+        const plz = normPLZ((row['Address, postcode'] || '').trim());
+        
+        if (!plz) return;
+
+        // Match broker name
+        let brokerName = fullName;
+        if (!BROKER_COLORS[brokerName]) {
+          // Try matching by last name
+          const lastNameOnly = lastName;
+          for (const name in BROKER_COLORS) {
+            if (name.split(' ').pop() === lastNameOnly) {
+              brokerName = name;
+              break;
+            }
+          }
+        }
+        if (!BROKER_COLORS[brokerName]) return;
+
+        // Find PLZ in GeoJSON
+        const plzFeature = plzGeo.features.find(f => {
+          const fplz = f.properties._plz || f.properties.plz || f.properties.PLZ;
+          return normPLZ(fplz) === plz;
+        });
+        if (!plzFeature) return;
+
+        // Get centroid
+        try {
+          const centroid = turf.centroid(plzFeature);
+          const coords = centroid.geometry.coordinates;
+          const color = BROKER_COLORS[brokerName];
+
+          // Create simple pin
+          const el = document.createElement('div');
+          el.innerHTML = `<svg width="30" height="30" viewBox="0 0 24 24"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z" fill="${color}" stroke="#fff" stroke-width="1.5"/><circle cx="12" cy="9" r="2.5" fill="#fff"/></svg>`;
+          el.title = brokerName;
+          el.style.cursor = 'pointer';
+
+          const marker = new maplibregl.Marker({ element: el, anchor: 'bottom' })
+            .setLngLat(coords)
+            .addTo(map);
+          
+          // Add click handler to show broker name
+          el.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const popup = new maplibregl.Popup({ closeButton: true, closeOnClick: true })
+              .setLngLat(coords)
+              .setHTML(`<div style="font-size:14px; font-weight:600;">${brokerName}</div>`)
+              .addTo(map);
+          });
+          
+          brokerMarkers.push(marker);
+        } catch (e) {}
+      });
+    }).catch(e => console.warn('Could not load broker addresses:', e));
+  }
+
+  // Map initialization
+  const map = new maplibregl.Map({
+    container: 'map',
+    style: {
+      version: 8,
+      sources: {
+        osm: {
+          type: 'raster',
+          tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+          tileSize: 256,
+          attribution: '© OpenStreetMap contributors'
+        }
+      },
+      layers: [{ id: 'osm', type: 'raster', source: 'osm' }]
+    },
+    center: [10.45, 51.15],
+    zoom: 5.6
+  });
+
+  Promise.all([
+    fetchJSON(FILES.lkGeo),
+    fetchJSON(FILES.plzGeo),
+    fetchCSV(FILES.plzCSV),
+    fetchCSV(FILES.lkCSV),
+    fetchJSON('company_counts_plz.json')
+  ]).then(([lkGeoData, plzGeoData, plzRowsData, lkRows, companyCounts]) => {
+    lkGeo = lkGeoData;
+    plzGeo = plzGeoData;
+    companyData = companyCounts;
+    plzRows = plzRowsData;
+    originalPlzRows = JSON.parse(JSON.stringify(plzRowsData)); // Deep copy
+
+    const brokerProspects = calculateBrokerProspects(plzRows, companyData);
+
+    // Populate broker select (including Unassigned)
+    const brokerSelect = document.getElementById('partitionBrokerSelect');
+    const allBrokersList = Object.keys(brokerProspects).sort((a, b) => brokerProspects[b] - brokerProspects[a]);
+    allBrokersList.forEach(broker => {
+        const option = document.createElement('option');
+        option.value = broker;
+        option.textContent = `${broker} (${brokerProspects[broker].toLocaleString()})`;
+        brokerSelect.appendChild(option);
+    });
+
+    const plzMap = new Map(plzRows.map(r => [normPLZ(r.PLZ), r]));
+    const lkMap = new Map(lkRows.map(r => [r.Landkreis, r]));
+
+    // Enrich PLZ features
+    let plzMatches = 0;
+    plzGeo.features.forEach(f => {
+      let code = null;
+      const keys = ['plz', 'PLZ', 'postcode', 'postal_code', 'code', 'note'];
+      for (const k of keys) {
+        const v = f.properties[k];
+        if (v && /^\d{5}$/.test(String(v))) { code = String(v); break; }
+      }
+      if (!code) {
+        for (const k in f.properties) {
+          const m = String(f.properties[k]).match(/\b\d{5}\b/);
+          if (m) { code = m[0]; break; }
+        }
+      }
+      code = normPLZ(code);
+      const row = plzMap.get(code);
+      f.properties._plz = code;
+      f.properties._owner = row ? (row.owner || 'Unassigned') : 'Unassigned';
+      if (row) plzMatches++;
+    });
+
+    // Helper function to normalize Landkreis names for matching
+    function normalizeLKName(name) {
+      if (!name) return '';
+      // Remove prefix
+      let normalized = name.replace(/^(Landkreis|Kreis|Kreisfreie Stadt)\s+/i, '');
+      // Normalize common variations
+      normalized = normalized
+        .replace(/\s*\([^)]*\)/g, '') // Remove parentheses and content
+        .replace(/\s*\/[^/]*/g, '') // Remove slash and content after
+        .replace(/\ba\.d\./gi, 'a d')
+        .replace(/\ba\.\s*d\./gi, 'a d')
+        .replace(/\bi\.d\./gi, 'i d')
+        .replace(/\bi\.\s*d\./gi, 'i d')
+        .replace(/\bam\b/gi, 'a')
+        .replace(/\bSt\./gi, 'Sankt')
+        .replace(/\s+/g, ' ')
+        .toLowerCase()
+        .trim();
+      return normalized;
+    }
+
+    // Enrich LK features with owner
+    let lkMatches = 0;
+    lkGeo.features.forEach(f => {
+      let lkName = '';
+      const krsNameShort = f.properties.krs_name_short;
+      const krsName = f.properties.krs_name;
+      
+      // Get all possible names from GeoJSON
+      const possibleNames = [];
+      if (krsNameShort && Array.isArray(krsNameShort) && krsNameShort.length > 0) {
+        possibleNames.push(krsNameShort[0]);
+      }
+      if (krsName && Array.isArray(krsName) && krsName.length > 0) {
+        possibleNames.push(krsName[0]);
+        // Also add without prefix
+        const withoutPrefix = krsName[0].replace(/^(Landkreis|Kreis|Kreisfreie Stadt)\s+/i, '');
+        if (withoutPrefix !== krsName[0] && !possibleNames.includes(withoutPrefix)) {
+          possibleNames.push(withoutPrefix);
+        }
+      }
+      
+      // Use first name as primary
+      lkName = possibleNames[0] || 'Unknown';
+      
+      let row = null;
+      let matchedCsvName = null;
+      
+      // Try exact match for all possible names
+      for (const name of possibleNames) {
+        row = lkMap.get(name);
+        if (row) {
+          matchedCsvName = name;
+          lkName = name;
+          break;
+        }
+      }
+      
+      // Try normalized matching if exact match failed
+      if (!row) {
+        const normalizedGeo = normalizeLKName(lkName);
+        for (const [csvLkName, csvRow] of lkMap.entries()) {
+          const normalizedCsv = normalizeLKName(csvLkName);
+          if (normalizedGeo === normalizedCsv && normalizedGeo.length > 3) {
+            row = csvRow;
+            matchedCsvName = csvLkName;
+            break;
+          }
+        }
+      }
+      
+      // Assign owner
+      let owner = row ? (row.owner || 'Unassigned') : 'Unassigned';
+      
+      f.properties._owner = owner;
+      f.properties._lkname = matchedCsvName || lkName || (krsName && Array.isArray(krsName) ? krsName[0] : 'Unknown');
+      if (row) lkMatches++;
+    });
+
+    // Build Landkreis to PLZ mapping
+    lkToPlzCodes = new Map();
+    plzRows.forEach(row => {
+      const lkName = row.Landkreis;
+      const plz = normPLZ(row.PLZ);
+      if (lkName && plz) {
+        if (!lkToPlzCodes.has(lkName)) {
+          lkToPlzCodes.set(lkName, []);
+        }
+        lkToPlzCodes.get(lkName).push(plz);
+      }
+    });
+
+    // Second pass: Derive Landkreis owners from PLZs ONLY for truly unassigned
+    // (Don't override CSV assignments - only fill in gaps)
+    lkGeo.features.forEach(f => {
+      if (f.properties._owner === 'Unassigned') {
+        const lkName = f.properties._lkname;
+        if (!lkName) return;
+        
+        // Get all PLZs for this Landkreis using normalized matching
+        const brokerCounts = new Map();
+        const normalizedLkName = normalizeLKName(lkName);
+        
+        plzRows.forEach(row => {
+          const rowLkName = row.Landkreis;
+          if (rowLkName) {
+            const normalizedRowName = normalizeLKName(rowLkName);
+            // Match using normalized names
+            if (normalizedRowName === normalizedLkName && normalizedLkName.length > 3) {
+              const owner = row.owner || 'Unassigned';
+              if (owner !== 'Unassigned') {
+                const count = brokerCounts.get(owner) || 0;
+                brokerCounts.set(owner, count + 1);
+              }
+            }
+          }
+        });
+        
+        // Find the most common broker (must be clear majority)
+        if (brokerCounts.size > 0) {
+          let maxCount = 0;
+          let majorityBroker = null;
+          let totalPLZs = 0;
+          
+          brokerCounts.forEach((count, broker) => {
+            totalPLZs += count;
+            if (count > maxCount) {
+              maxCount = count;
+              majorityBroker = broker;
+            }
+          });
+          
+          // Only assign if clear majority (>50%) and at least 3 PLZs
+          if (majorityBroker && maxCount >= totalPLZs * 0.5 && totalPLZs >= 3) {
+            f.properties._owner = majorityBroker;
+            lkMatches++;
+          }
+        }
+      }
+    });
+
+    // Aggregate company counts to Landkreis level
+    lkCompanyData = {};
+    lkGeo.features.forEach(lkf => {
+      const lkName = lkf.properties._lkname;
+      if (!lkName || !lkName.trim()) return;
+      let lkPlzCodes = lkToPlzCodes.get(lkName) || [];
+      if (lkPlzCodes.length === 0) {
+        for (const [csvLkName, plzCodes] of lkToPlzCodes.entries()) {
+          if (lkName.includes(csvLkName) || csvLkName.includes(lkName) || 
+              lkName.toLowerCase() === csvLkName.toLowerCase()) {
+            lkPlzCodes = plzCodes;
+            break;
+          }
+        }
+      }
+      let totalCompanies = 0;
+      lkPlzCodes.forEach(plz => {
+        totalCompanies += companyData[plz] || 0;
+      });
+      lkCompanyData[lkName] = totalCompanies;
+    });
+
+    diagEl.textContent = `Loaded ${plzMatches} PLZ assignments\n${lkMatches} Landkreise matched\n${Object.keys(lkCompanyData).length} Landkreise with company data`;
+
+    map.on('load', () => {
+      map.addSource('lk', { type: 'geojson', data: lkGeo });
+      map.addSource('plz', { type: 'geojson', data: plzGeo });
+
+      // Broker layers - Landkreise
+      map.addLayer({
+        id: 'lk-fill',
+        type: 'fill',
+        source: 'lk',
+        paint: {
+          'fill-color': [
+            'match',
+            ['get', '_owner'],
+            ...Object.entries(BROKER_COLORS).flat(),
+            '#d1d5db'
+          ],
+          'fill-opacity': 0.8
+        }
+      });
+
+      map.addLayer({
+        id: 'lk-line',
+        type: 'line',
+        source: 'lk',
+        paint: {
+          'line-color': '#4b5563',
+          'line-width': 1.5,
+          'line-opacity': 0.9
+        }
+      });
+
+      // Broker layers - PLZ
+      map.addLayer({
+        id: 'plz-fill',
+        type: 'fill',
+        source: 'plz',
+        paint: {
+          'fill-color': [
+            'match',
+            ['get', '_owner'],
+            ...Object.entries(BROKER_COLORS).flat(),
+            '#d1d5db'
+          ],
+          'fill-opacity': 0.7
+        },
+        layout: { 'visibility': 'none' }
+      });
+
+      map.addLayer({
+        id: 'plz-line',
+        type: 'line',
+        source: 'plz',
+        paint: {
+          'line-color': '#111',
+          'line-width': 0.8,
+          'line-opacity': 0.9
+        },
+        layout: { 'visibility': 'none' }
+      });
+
+      // Company heat map layers - Landkreise
+      const maxLK = Math.max(...Object.values(lkCompanyData), 1);
+      map.addLayer({
+        id: 'company-lk-fill',
+        type: 'fill',
+        source: 'lk',
+        paint: {
+          'fill-color': [
+            'match',
+            ['get', '_lkname'],
+            ...Object.entries(lkCompanyData).flatMap(([lk, count]) => [lk, getHeatMapColor(count, maxLK)]),
+            'rgba(240, 240, 240, 0.3)'
+          ],
+          'fill-opacity': 0.8
+        },
+        layout: { 'visibility': 'none' }
+      });
+
+      map.addLayer({
+        id: 'company-lk-line',
+        type: 'line',
+        source: 'lk',
+        paint: {
+          'line-color': '#666',
+          'line-width': 1.5,
+          'line-opacity': 0.9
+        },
+        layout: { 'visibility': 'none' }
+      });
+
+      // Company heat map layers - PLZ
+      const maxPLZ = Math.max(...Object.values(companyData), 1);
+      map.addLayer({
+        id: 'company-plz-fill',
+        type: 'fill',
+        source: 'plz',
+        paint: {
+          'fill-color': [
+            'match',
+            ['get', '_plz'],
+            ...Object.entries(companyData).flatMap(([plz, count]) => [plz, getHeatMapColor(count, maxPLZ)]),
+            'rgba(240, 240, 240, 0.3)'
+          ],
+          'fill-opacity': 0.7
+        },
+        layout: { 'visibility': 'none' }
+      });
+
+      map.addLayer({
+        id: 'company-plz-line',
+        type: 'line',
+        source: 'plz',
+        paint: {
+          'line-color': '#666',
+          'line-width': 0.8,
+          'line-opacity': 0.9
+        },
+        layout: { 'visibility': 'none' }
+      });
+
+      // Tooltips
+      const popup = new maplibregl.Popup({ closeButton: false, closeOnClick: false });
+      
+      function showTip(e, level) {
+        const f = e.features[0];
+        if (currentTab === 'broker' || currentTab === 'partition') {
+          let subzoneInfo = '';
+          if (f.properties._partitioned) {
+            subzoneInfo = `\nSubzone: ${(f.properties._subzone || 0) + 1}`;
+            if (f.properties._partitionBroker) {
+              subzoneInfo += ` (${f.properties._partitionBroker})`;
+            }
+          }
+          const reassignedInfo = f.properties._reassignedBroker 
+            ? `\n⚠️ Reassigned to: ${f.properties._reassignedBroker}` 
+            : '';
+          const html = level === 'lk'
+            ? `<div style="font-size:13px"><b>${f.properties._lkname || 'Landkreis'}</b><br/>Broker: ${f.properties._owner}${subzoneInfo}${reassignedInfo}</div>`
+            : `<div style="font-size:13px"><b>PLZ ${f.properties._plz}</b><br/>Broker: ${f.properties._owner}${subzoneInfo}${reassignedInfo}${reassignmentMode ? '<br/><span style="color:#007bff;">Click to reassign</span>' : ''}</div>`;
+          popup.setLngLat(e.lngLat).setHTML(html).addTo(map);
+        } else {
+          const count = level === 'lk' 
+            ? (lkCompanyData[f.properties._lkname] || 0)
+            : (companyData[f.properties._plz] || 0);
+          const html = level === 'lk'
+            ? `<div style="font-size:13px"><b>${f.properties._lkname || 'Landkreis'}</b><br/>Companies: ${count.toLocaleString()}</div>`
+            : `<div style="font-size:13px"><b>PLZ ${f.properties._plz}</b><br/>Companies: ${count.toLocaleString()}</div>`;
+          popup.setLngLat(e.lngLat).setHTML(html).addTo(map);
+        }
+      }
+
+      map.on('mousemove', 'lk-fill', e => showTip(e, 'lk'));
+      map.on('mouseleave', 'lk-fill', () => popup.remove());
+      map.on('mousemove', 'plz-fill', e => showTip(e, 'plz'));
+      map.on('mouseleave', 'plz-fill', () => popup.remove());
+      map.on('mousemove', 'company-lk-fill', e => showTip(e, 'lk'));
+      map.on('mouseleave', 'company-lk-fill', () => popup.remove());
+      map.on('mousemove', 'company-plz-fill', e => showTip(e, 'plz'));
+      map.on('mouseleave', 'company-plz-fill', () => popup.remove());
+
+      // Click handlers
+      map.on('click', 'lk-fill', e => {
+        if (currentTab !== 'broker') return;
+        const f = e.features[0];
+        const name = f.properties._lkname || 'Landkreis';
+        badge.textContent = name;
+        badge.style.display = 'inline-block';
+        currentView = 'plz';
+
+        map.setLayoutProperty('lk-fill', 'visibility', 'none');
+        map.setLayoutProperty('lk-line', 'visibility', 'none');
+        map.setLayoutProperty('plz-fill', 'visibility', 'visible');
+        map.setLayoutProperty('plz-line', 'visibility', 'visible');
+
+        if (highlightedBroker) {
+          const tempBroker = highlightedBroker;
+          highlightedBroker = null;
+          highlightBrokerZones(tempBroker);
+        }
+
+        try {
+          const b = turf.bbox(f);
+          map.fitBounds([[b[0], b[1]], [b[2], b[3]]], { padding: 24 });
+        } catch(_) {}
+      });
+
+      // PLZ click handler for reassignment mode
+      map.on('click', 'plz-fill', e => {
+        if (currentTab !== 'partition' || !reassignmentMode) return;
+        
+        const f = e.features[0];
+        const plz = f.properties._plz;
+        const targetBroker = document.getElementById('reassignBrokerSelect').value;
+        const reassignMode = document.querySelector('input[name="reassignMode"]:checked')?.value || 'plz';
+        
+        if (!targetBroker || targetBroker === '') {
+          alert('Please select a broker to reassign to first');
+          return;
+        }
+        
+        if (reassignMode === 'subzone') {
+          // Reassign entire subzone
+          const broker = f.properties._partitionBroker;
+          const subzone = f.properties._subzone;
+          
+          if (broker && subzone !== null && subzone !== undefined) {
+            if (confirm(`Reassign entire subzone ${subzone + 1} of ${broker} to ${targetBroker}?`)) {
+              reassignSubzone(broker, subzone, targetBroker);
+            }
+          } else {
+            alert('This PLZ is not part of a partitioned subzone. Use PLZ mode to reassign individual PLZs.');
+          }
+        } else {
+          // Reassign single PLZ
+          reassignPLZ(plz, targetBroker);
+        }
+      });
+
+      map.on('click', 'company-lk-fill', e => {
+        if (currentTab !== 'company') return;
+        const f = e.features[0];
+        currentView = 'plz';
+
+        map.setLayoutProperty('company-lk-fill', 'visibility', 'none');
+        map.setLayoutProperty('company-lk-line', 'visibility', 'none');
+        map.setLayoutProperty('company-plz-fill', 'visibility', 'visible');
+        map.setLayoutProperty('company-plz-line', 'visibility', 'visible');
+
+        createCompanyLegend();
+
+        try {
+          const b = turf.bbox(f);
+          map.fitBounds([[b[0], b[1]], [b[2], b[3]]], { padding: 24 });
+        } catch(_) {}
+      });
+
+      // Reset buttons
+      document.getElementById('resetBtn').addEventListener('click', () => {
+        if (currentTab !== 'broker') return;
+        currentView = 'lk';
+        badge.style.display = 'none';
+        if (highlightedBroker) {
+          highlightBrokerZones(highlightedBroker);
+        }
+        map.setLayoutProperty('lk-fill', 'visibility', 'visible');
+        map.setLayoutProperty('lk-line', 'visibility', 'visible');
+        map.setLayoutProperty('plz-fill', 'visibility', 'none');
+        map.setLayoutProperty('plz-line', 'visibility', 'none');
+        map.fitBounds([[5.4, 47.1], [15.5, 55.1]], { padding: 20 });
+        // Markers remain visible (they're always on top)
+      });
+
+      document.getElementById('companyResetBtn').addEventListener('click', () => {
+        if (currentTab !== 'company') return;
+        currentView = 'lk';
+        map.setLayoutProperty('company-lk-fill', 'visibility', 'visible');
+        map.setLayoutProperty('company-lk-line', 'visibility', 'visible');
+        map.setLayoutProperty('company-plz-fill', 'visibility', 'none');
+        map.setLayoutProperty('company-plz-line', 'visibility', 'none');
+        createCompanyLegend();
+        map.fitBounds([[5.4, 47.1], [15.5, 55.1]], { padding: 20 });
+      });
+
+      // Partitioning controls
+      document.getElementById('partitionBtn').addEventListener('click', () => {
+        const broker = document.getElementById('partitionBrokerSelect').value;
+        const numSubzones = parseInt(document.getElementById('numSubzones').value) || 3;
+        if (!broker) {
+          alert('Please select a broker to partition');
+          return;
+        }
+        if (numSubzones < 2 || numSubzones > 20) {
+          alert('Number of subzones must be between 2 and 20');
+          return;
+        }
+        partitionBrokerZone(broker, numSubzones);
+      });
+
+      document.getElementById('clearPartitionBtn').addEventListener('click', () => {
+        const selectedBroker = document.getElementById('partitionBrokerSelect').value;
+        if (selectedBroker && allPartitions[selectedBroker]) {
+          if (confirm(`Clear partition for ${selectedBroker}?`)) {
+            clearPartitioning(false, selectedBroker);
+            resetFocus();
+          }
+        } else {
+          if (confirm('Clear all partitions and reassignments? This cannot be undone.')) {
+            clearPartitioning(true);
+            resetFocus();
+          }
+        }
+      });
+
+      document.getElementById('resetFocusBtn').addEventListener('click', () => {
+        resetFocus();
+        // Reset zoom to full Germany
+        map.fitBounds([[5.4, 47.1], [15.5, 55.1]], { padding: 20 });
+        diagEl.textContent = 'View reset to full map';
+      });
+
+      document.getElementById('exportPartitionBtn').addEventListener('click', () => {
+        exportPartitionedAssignments();
+      });
+
+      // Reassignment mode toggle
+      document.getElementById('reassignmentMode').addEventListener('change', (e) => {
+        reassignmentMode = e.target.checked;
+        const controls = document.getElementById('reassignmentControls');
+        controls.style.display = reassignmentMode ? 'block' : 'none';
+        
+        if (reassignmentMode) {
+          updateReassignBrokerSelect();
+          // Change cursor style
+          map.getCanvas().style.cursor = 'crosshair';
+          // Update hint text based on mode
+          updateReassignHint();
+        } else {
+          map.getCanvas().style.cursor = '';
+        }
+      });
+
+      // Update reassign hint based on mode
+      function updateReassignHint() {
+        const hint = document.getElementById('reassignHint');
+        const mode = document.querySelector('input[name="reassignMode"]:checked')?.value || 'plz';
+        if (hint) {
+          hint.textContent = mode === 'subzone' 
+            ? 'Click on any PLZ in a subzone to reassign the entire subzone'
+            : 'Click on PLZ areas to reassign them to selected broker';
+        }
+      }
+
+      // Listen for reassign mode changes
+      document.querySelectorAll('input[name="reassignMode"]').forEach(radio => {
+        radio.addEventListener('change', updateReassignHint);
+      });
+
+      // Add new broker
+      document.getElementById('addNewBrokerBtn').addEventListener('click', () => {
+        document.getElementById('newBrokerInput').style.display = 'block';
+        document.getElementById('newBrokerName').focus();
+      });
+
+      document.getElementById('confirmNewBrokerBtn').addEventListener('click', () => {
+        const newName = document.getElementById('newBrokerName').value.trim();
+        if (!newName) {
+          alert('Please enter a broker name');
+          return;
+        }
+        
+        // Add to broker colors if not exists
+        if (!BROKER_COLORS[newName]) {
+          // Generate a color for new broker
+          const colors = Object.values(BROKER_COLORS);
+          const newColor = '#28a745'; // Green for new brokers
+          BROKER_COLORS[newName] = newColor;
+          newBrokers.add(newName);
+        }
+        
+        // Update select
+        updateReassignBrokerSelect();
+        document.getElementById('reassignBrokerSelect').value = newName;
+        
+        // Hide input
+        document.getElementById('newBrokerInput').style.display = 'none';
+        document.getElementById('newBrokerName').value = '';
+        
+        diagEl.textContent = `Added new broker: ${newName}`;
+      });
+
+      document.getElementById('cancelNewBrokerBtn').addEventListener('click', () => {
+        document.getElementById('newBrokerInput').style.display = 'none';
+        document.getElementById('newBrokerName').value = '';
+      });
+
+      // Save/Load state
+      document.getElementById('saveStateBtn').addEventListener('click', () => {
+        saveStateToFile();
+      });
+
+      document.getElementById('loadStateBtn').addEventListener('click', () => {
+        // Trigger file input
+        document.getElementById('loadStateFile').click();
+      });
+
+      // Handle file selection
+      document.getElementById('loadStateFile').addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        
+        if (confirm(`Load state from "${file.name}"? This will replace current partitions.`)) {
+          loadStateFromFile(file).catch(err => {
+            console.error('Failed to load state:', err);
+          });
+        }
+        
+        // Reset file input so same file can be selected again
+        e.target.value = '';
+      });
+
+      // Tab switching
+      function switchToBrokerTab() {
+        currentTab = 'broker';
+        document.getElementById('brokerTab').classList.add('active');
+        document.getElementById('companyTab').classList.remove('active');
+        document.getElementById('partitionTab').classList.remove('active');
+        document.getElementById('brokerContent').classList.add('active');
+        document.getElementById('companyContent').classList.remove('active');
+        document.getElementById('partitionContent').classList.remove('active');
+
+        legendTitle.textContent = 'Broker Legend';
+        createBrokerLegend(brokerProspects);
+
+        if (currentView === 'lk') {
+          map.setLayoutProperty('lk-fill', 'visibility', 'visible');
+          map.setLayoutProperty('lk-line', 'visibility', 'visible');
+          map.setLayoutProperty('plz-fill', 'visibility', 'none');
+          map.setLayoutProperty('plz-line', 'visibility', 'none');
+        } else {
+          map.setLayoutProperty('lk-fill', 'visibility', 'none');
+          map.setLayoutProperty('lk-line', 'visibility', 'none');
+          map.setLayoutProperty('plz-fill', 'visibility', 'visible');
+          map.setLayoutProperty('plz-line', 'visibility', 'visible');
+        }
+
+        ['company-lk-fill', 'company-lk-line', 'company-plz-fill', 'company-plz-line'].forEach(layer => {
+          map.setLayoutProperty(layer, 'visibility', 'none');
+        });
+
+        // Add broker pins
+        addBrokerPins();
+      }
+
+      function switchToCompanyTab() {
+        currentTab = 'company';
+        document.getElementById('companyTab').classList.add('active');
+        document.getElementById('brokerTab').classList.remove('active');
+        document.getElementById('partitionTab').classList.remove('active');
+        document.getElementById('companyContent').classList.add('active');
+        document.getElementById('brokerContent').classList.remove('active');
+        document.getElementById('partitionContent').classList.remove('active');
+
+        legendTitle.textContent = 'Company Density';
+        createCompanyLegend();
+
+        ['lk-fill', 'lk-line', 'plz-fill', 'plz-line'].forEach(layer => {
+          map.setLayoutProperty(layer, 'visibility', 'none');
+        });
+
+        if (currentView === 'lk') {
+          map.setLayoutProperty('company-lk-fill', 'visibility', 'visible');
+          map.setLayoutProperty('company-lk-line', 'visibility', 'visible');
+          map.setLayoutProperty('company-plz-fill', 'visibility', 'none');
+          map.setLayoutProperty('company-plz-line', 'visibility', 'none');
+        } else {
+          map.setLayoutProperty('company-lk-fill', 'visibility', 'none');
+          map.setLayoutProperty('company-lk-line', 'visibility', 'none');
+          map.setLayoutProperty('company-plz-fill', 'visibility', 'visible');
+          map.setLayoutProperty('company-plz-line', 'visibility', 'visible');
+        }
+
+        highlightedBroker = null;
+        
+        // Remove broker pins in company tab
+        brokerMarkers.forEach(m => m.remove());
+        brokerMarkers = [];
+      }
+
+      function switchToPartitionTab() {
+        currentTab = 'partition';
+        document.getElementById('partitionTab').classList.add('active');
+        document.getElementById('brokerTab').classList.remove('active');
+        document.getElementById('companyTab').classList.remove('active');
+        document.getElementById('partitionContent').classList.add('active');
+        document.getElementById('brokerContent').classList.remove('active');
+        document.getElementById('companyContent').classList.remove('active');
+
+        // Show appropriate legend
+        if (Object.keys(allPartitions).length > 0) {
+          legendTitle.textContent = 'All Partitions';
+          createAllPartitionsLegend();
+        } else if (partitionedAssignments) {
+          legendTitle.textContent = 'Subzone Legend';
+          createSubzoneLegend(partitionedAssignments.broker, partitionedAssignments.subzones.length, partitionedAssignments.subzones);
+        } else {
+          legendTitle.textContent = 'Broker Legend';
+          createBrokerLegend(brokerProspects);
+        }
+
+        // Show PLZ view for partitioning
+        currentView = 'plz';
+        map.setLayoutProperty('lk-fill', 'visibility', 'none');
+        map.setLayoutProperty('lk-line', 'visibility', 'none');
+        map.setLayoutProperty('plz-fill', 'visibility', 'visible');
+        map.setLayoutProperty('plz-line', 'visibility', 'visible');
+
+        ['company-lk-fill', 'company-lk-line', 'company-plz-fill', 'company-plz-line'].forEach(layer => {
+          map.setLayoutProperty(layer, 'visibility', 'none');
+        });
+
+        highlightedBroker = null;
+        
+        // Update reassign broker select
+        updateReassignBrokerSelect();
+        
+        // Add broker pins
+        addBrokerPins();
+      }
+
+      document.getElementById('brokerTab').addEventListener('click', switchToBrokerTab);
+      document.getElementById('companyTab').addEventListener('click', switchToCompanyTab);
+      document.getElementById('partitionTab').addEventListener('click', switchToPartitionTab);
+
+      // Initialize (we're already inside map.on('load'), so map is ready)
+      createBrokerLegend(brokerProspects);
+      updateReassignBrokerSelect();
+      switchToBrokerTab();
+      
+      // Add broker pins
+      addBrokerPins();
+      
+      // Note: Auto-load from localStorage removed - use "Load State" button to load from file
+    });
+  })
+  .catch(err => {
+    console.error(err);
+    diagEl.textContent = 'Error: ' + (err && err.message ? err.message : String(err)) +
+      '\n\nMake sure all required files are present and serve via http://localhost:...';
+  });
+})();
+</script>
+</body>
+</html>
+
