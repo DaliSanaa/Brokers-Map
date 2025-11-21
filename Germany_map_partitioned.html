@@ -1830,13 +1830,43 @@
 
     const brokerProspects = calculateBrokerProspects(plzRows, companyData);
 
+    // Calculate PLZ counts for each broker (including Unassigned)
+    const brokerPLZCounts = {};
+    plzRows.forEach(row => {
+      const broker = row.owner || 'Unassigned';
+      brokerPLZCounts[broker] = (brokerPLZCounts[broker] || 0) + 1;
+    });
+
     // Populate broker select (including Unassigned)
     const brokerSelect = document.getElementById('partitionBrokerSelect');
-    const allBrokersList = Object.keys(brokerProspects).sort((a, b) => brokerProspects[b] - brokerProspects[a]);
+    
+    // Get all brokers from CSV (including Unassigned)
+    const allBrokersFromCSV = new Set();
+    plzRows.forEach(row => {
+      const broker = row.owner || 'Unassigned';
+      allBrokersFromCSV.add(broker);
+    });
+    
+    // Ensure Unassigned is always included
+    allBrokersFromCSV.add('Unassigned');
+    
+    // Sort brokers: by company count (descending), but put Unassigned at the end
+    const allBrokersList = Array.from(allBrokersFromCSV).sort((a, b) => {
+      // Put Unassigned at the end
+      if (a === 'Unassigned') return 1;
+      if (b === 'Unassigned') return -1;
+      const countA = brokerProspects[a] || 0;
+      const countB = brokerProspects[b] || 0;
+      return countB - countA;
+    });
+    
     allBrokersList.forEach(broker => {
         const option = document.createElement('option');
         option.value = broker;
-        option.textContent = `${broker} (${brokerProspects[broker].toLocaleString()})`;
+        const companyCount = brokerProspects[broker] || 0;
+        const plzCount = brokerPLZCounts[broker] || 0;
+        // Show both PLZ count and company count for better context
+        option.textContent = `${broker} (${plzCount} PLZs, ${companyCount.toLocaleString()} companies)`;
         brokerSelect.appendChild(option);
     });
 
