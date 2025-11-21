@@ -1747,7 +1747,7 @@
         // Match broker name
         let brokerName = fullName;
         if (!BROKER_COLORS[brokerName]) {
-          // Try matching by last name
+          // Try matching by last name (exact match)
           const lastNameOnly = lastName;
           for (const name in BROKER_COLORS) {
             if (name.split(' ').pop() === lastNameOnly) {
@@ -1756,6 +1756,25 @@
             }
           }
         }
+        
+        // If still no match, try fuzzy matching by last name (handle spelling variations)
+        if (!BROKER_COLORS[brokerName]) {
+          const lastNameOnly = lastName.toLowerCase();
+          for (const name in BROKER_COLORS) {
+            const nameParts = name.split(' ');
+            const nameLastName = nameParts[nameParts.length - 1].toLowerCase();
+            // Check if last names are similar (handle common variations like Henning/Hennig)
+            if (nameLastName === lastNameOnly || 
+                nameLastName.includes(lastNameOnly) || 
+                lastNameOnly.includes(nameLastName) ||
+                (nameLastName.length > 4 && lastNameOnly.length > 4 && 
+                 nameLastName.substring(0, 4) === lastNameOnly.substring(0, 4))) {
+              brokerName = name;
+              break;
+            }
+          }
+        }
+        
         if (!BROKER_COLORS[brokerName]) return;
 
         // Find PLZ in GeoJSON
